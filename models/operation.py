@@ -154,3 +154,89 @@ class Operation:
             return False, f"Ошибка при удалении: {e}"
         finally:
             conn.close()
+    
+    # =============================================
+    # МОДИФИКАЦИЯ 1: ОБНОВЛЕНИЕ ОПЕРАЦИИ
+    # =============================================
+    
+    @staticmethod
+    def update_operation(operation_id, new_amount, new_category_id):
+        """
+        Обновить сумму и категорию операции с корректировкой баланса счёта
+        """
+        conn = get_connection()
+        if not conn:
+            return False, "Ошибка подключения к базе данных"
+        
+        try:
+            cursor = conn.cursor()
+            
+            # 1. Получаем текущую информацию об операции
+            cursor.execute("""
+                SELECT o.account_id, o.amount, c.type, o.user_id
+                FROM operations o
+                JOIN categories c ON o.category_id = c.id
+                WHERE o.id = %s
+            """, (operation_id,))
+            
+            result = cursor.fetchone()
+            if not result:
+                return False, "Операция не найдена"
+            
+            account_id, old_amount, old_cat_type, user_id = result
+            
+            # 2. Получаем тип новой категории
+            cursor.execute("""
+                SELECT type FROM categories WHERE id = %s AND user_id = %s
+            """, (new_category_id, user_id))
+            
+            cat_result = cursor.fetchone()
+            if not cat_result:
+                return False, "Новая категория не найдена"
+            
+            new_cat_type = cat_result[0]
+            
+            # 3. Корректируем баланс счёта
+            # Отменяем влияние старой операции
+            if old_cat_type == 'income':
+                # Старый доход: вычитаем из баланса
+                cursor.execute("""
+                    UPDATE accounts SET balance = balance - %s
+                    WHERE id = %s AND user_id = %s
+                """, (old_amount, account_id, user_id))
+            else:
+                # Старый расход: прибавляем к балансу
+                cursor.execute("""
+                    UPDATE accounts SET balance = balance + %s
+                    WHERE id = %s AND user_id = %s
+                """, (old_amount, account_id, user_id))
+            
+            # 4. Применяем влияние новой операции
+            if new_cat_type == 'income':
+                # Новый доход: прибавляем к балансу
+                cursor.execute("""
+                    UPDATE accounts SET balance = balance + %s
+                    WHERE id = %s AND user_id = %s
+                """, (new_amount, account_id, user_id))
+            else:
+                # Новый расход: вычитаем из баланса
+                cursor.execute("""
+                    UPDATE accounts SET balance = balance - %s
+                    WHERE id = %s AND user_id = %s
+                """, (new_amount, account_id, user_id))
+            
+            # 5. Обновляем операцию
+            cursor.execute("""
+                UPDATE operations 
+                SET amount = %s, category_id = %s
+                WHERE id = %s AND user_id = %s
+            """, (new_amount, new_category_id, operation_id, user_id))
+            
+            conn.commit()
+            return True, "Операция успешно обновлена"
+            
+        except Exception as e:
+            conn.rollback()
+            return False, f"Ошибка при обновлении: {e}"
+        finally:
+            conn.close()

@@ -1,13 +1,15 @@
 # Бизнес-логика для формирования отчётов
 
 from models.report import Report
+from models.category import Category
 from datetime import datetime
+from utils.validators import get_date_input, confirm_action
 
 def get_date_range():
-    """Запрашивает у пользователя диапазон дат"""
+    """Запрашивает у пользователя диапазон дат (Модификация 3: с валидацией)"""
     print("\n--- ВЫБОР ПЕРИОДА ---")
-    date_from = input("Начальная дата (ГГГГ-ММ-ДД, Enter - начало месяца): ").strip()
-    date_to = input("Конечная дата (ГГГГ-ММ-ДД, Enter - сегодня): ").strip()
+    date_from = get_date_input("Начальная дата (ГГГГ-ММ-ДД, Enter - начало месяца): ", allow_empty=True)
+    date_to = get_date_input("Конечная дата (ГГГГ-ММ-ДД, Enter - сегодня): ", allow_empty=True)
     
     if not date_from:
         date_from = datetime.now().strftime("%Y-%m-01")
@@ -15,6 +17,51 @@ def get_date_range():
         date_to = datetime.now().strftime("%Y-%m-%d")
     
     return date_from, date_to
+
+def get_category_filter(user_id, type_filter="expense"):
+    """
+    МОДИФИКАЦИЯ 3: Запрашивает у пользователя фильтр по категории
+    Возвращает category_id или None (если фильтр не нужен)
+    """
+    # Спрашиваем, нужен ли фильтр
+    print("\n--- ФИЛЬТР ПО КАТЕГОРИИ ---")
+    filter_choice = input("Фильтровать по конкретной категории? (да/нет, Enter - нет): ").strip().lower()
+    
+    if filter_choice not in ["да", "yes", "y", "д", "1"]:
+        return None
+    
+    # Получаем категории пользователя
+    categories = Category.get_by_type(user_id, type_filter)
+    
+    if not categories:
+        print(f"✗ У вас нет категорий для {'расходов' if type_filter == 'expense' else 'доходов'}")
+        return None
+    
+    print(f"\nДоступные категории ({'расходы' if type_filter == 'expense' else 'доходы'}):")
+    print("0. Все категории (отмена фильтра)")
+    for cat in categories:
+        cat_id, name = cat
+        print(f"  {cat_id}. {name}")
+    
+    try:
+        cat_id = int(input("\nВыберите категорию по ID: ").strip())
+        if cat_id == 0:
+            return None
+        
+        # Проверяем, существует ли такая категория
+        valid = False
+        for cat in categories:
+            if cat[0] == cat_id:
+                valid = True
+                break
+        if not valid:
+            print("✗ Неверная категория! Фильтр не применяется")
+            return None
+        
+        return cat_id
+    except ValueError:
+        print("✗ Неверный ввод! Фильтр не применяется")
+        return None
 
 def report_income_expense(user_id):
     """Отчёт: Доходы и расходы за период"""
@@ -41,8 +88,21 @@ def report_income_expense(user_id):
     print("=" * 50)
 
 def report_expense_by_category(user_id):
-    """Отчёт: Расходы по категориям за период"""
+    """
+    Отчёт: Расходы по категориям за период
+    МОДИФИКАЦИЯ 3: Добавлена фильтрация по категории
+    """
     date_from, date_to = get_date_range()
+    
+    # МОДИФИКАЦИЯ 3: Запрашиваем фильтр по категории
+    category_filter = get_category_filter(user_id, "expense")
+    
+    # Если выбран фильтр по категории, показываем детальный отчёт
+    if category_filter:
+        report_expense_by_single_category(user_id, date_from, date_to, category_filter)
+        return
+    
+    # Иначе показываем обычный отчёт по всем категориям
     results = Report.get_expense_by_category(user_id, date_from, date_to)
     
     print("\n" + "=" * 50)
@@ -63,9 +123,62 @@ def report_expense_by_category(user_id):
         print(f"{'ИТОГО:':<25} {total:>12.2f} ₽")
     print("=" * 50)
 
+
+def report_expense_by_single_category(user_id, date_from, date_to, category_id):
+    """
+    МОДИФИКАЦИЯ 3: Детальный отчёт по одной категории расходов
+    """
+    # Получаем название категории
+    categories = Category.get_by_type(user_id, "expense")
+    category_name = "Неизвестно"
+    for cat in categories:
+        if cat[0] == category_id:
+            category_name = cat[1]
+            break
+    
+    # Получаем детальные операции по этой категории
+    from models.operation import Operation
+    operations = Operation.get_all(user_id, date_from, date_to, category_id)
+    
+    print("\n" + "=" * 60)
+    print(f"  РАСХОДЫ ПО КАТЕГОРИИ: {category_name}")
+    print(f"  Период: {date_from} — {date_to}")
+    print("=" * 60)
+    
+    if not operations:
+        print("✗ Нет операций за выбранный период")
+        return
+    
+    print(f"{'ID':<5} {'Дата':<12} {'Сумма':<12} {'Счёт':<15} {'Комментарий':<20}")
+    print("-" * 70)
+    
+    total = 0
+    for op in operations:
+        op_id, date, amount, description, cat_name, cat_type, acc_name = op
+        print(f"{op_id:<5} {str(date):<12} {amount:>10.2f} ₽ {acc_name:<15} {(description or '-'):<20}")
+        total += amount
+    
+    print("-" * 70)
+    print(f"{'ИТОГО:':<30} {total:>10.2f} ₽")
+    print("=" * 60)
+
+
 def report_income_by_category(user_id):
-    """Отчёт: Доходы по категориям за период"""
+    """
+    Отчёт: Доходы по категориям за период
+    МОДИФИКАЦИЯ 3: Добавлена фильтрация по категории
+    """
     date_from, date_to = get_date_range()
+    
+    # МОДИФИКАЦИЯ 3: Запрашиваем фильтр по категории
+    category_filter = get_category_filter(user_id, "income")
+    
+    # Если выбран фильтр по категории, показываем детальный отчёт
+    if category_filter:
+        report_income_by_single_category(user_id, date_from, date_to, category_filter)
+        return
+    
+    # Иначе показываем обычный отчёт по всем категориям
     results = Report.get_income_by_category(user_id, date_from, date_to)
     
     print("\n" + "=" * 50)
@@ -85,6 +198,46 @@ def report_income_by_category(user_id):
         print("-" * 50)
         print(f"{'ИТОГО:':<25} {total:>12.2f} ₽")
     print("=" * 50)
+
+
+def report_income_by_single_category(user_id, date_from, date_to, category_id):
+    """
+    МОДИФИКАЦИЯ 3: Детальный отчёт по одной категории доходов
+    """
+    # Получаем название категории
+    categories = Category.get_by_type(user_id, "income")
+    category_name = "Неизвестно"
+    for cat in categories:
+        if cat[0] == category_id:
+            category_name = cat[1]
+            break
+    
+    # Получаем детальные операции по этой категории
+    from models.operation import Operation
+    operations = Operation.get_all(user_id, date_from, date_to, category_id)
+    
+    print("\n" + "=" * 60)
+    print(f"  ДОХОДЫ ПО КАТЕГОРИИ: {category_name}")
+    print(f"  Период: {date_from} — {date_to}")
+    print("=" * 60)
+    
+    if not operations:
+        print("✗ Нет операций за выбранный период")
+        return
+    
+    print(f"{'ID':<5} {'Дата':<12} {'Сумма':<12} {'Счёт':<15} {'Комментарий':<20}")
+    print("-" * 70)
+    
+    total = 0
+    for op in operations:
+        op_id, date, amount, description, cat_name, cat_type, acc_name = op
+        print(f"{op_id:<5} {str(date):<12} {amount:>10.2f} ₽ {acc_name:<15} {(description or '-'):<20}")
+        total += amount
+    
+    print("-" * 70)
+    print(f"{'ИТОГО:':<30} {total:>10.2f} ₽")
+    print("=" * 60)
+
 
 def report_account_balances(user_id):
     """Отчёт: Остатки по счетам"""
